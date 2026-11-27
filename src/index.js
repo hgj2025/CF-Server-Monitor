@@ -212,15 +212,7 @@ export default {
       return Response.redirect(target.toString(), 302);
     }
 
-    if (method === 'GET' && path.startsWith('/assets/')) {
-      try {
-        const themeAssetResponse = await serveFrontend(request, env, await loadSettings(env.DB));
-        if (themeAssetResponse.headers.get('X-CFSM-Theme-Asset') === '1') {
-          return applyCors(cleanThemeAssetResponse(themeAssetResponse), request, corsAllowedOrigins);
-        }
-      } catch (e) {
-      }
-    }
+    // 第三方主题反代已出于安全加固禁用，/assets/* 直接交由内置静态资源托管。
 
     const bypassTurnstilePaths = [
       '/admin/api',
@@ -284,6 +276,10 @@ export default {
       { method: 'POST', path: '/update', handler: () => handleUpdate(request, env, ctx) },
       { method: 'GET', path: '/update', handler: () => handleUpdateWebSocketUpgrade(request, env) },
       { method: 'GET', path: '/__do/health', handler: async () => {
+        await ensureSiteSettings();
+        if (!await checkAuth(request, env, sys)) {
+          return simpleAuthResponse();
+        }
         if (!env.METRICS_BROADCASTER) {
           return createSuccessResponse({ ok: false, reason: 'DO not bound' });
         }
@@ -440,19 +436,6 @@ export default {
         // WebSocket 升级响应直接原样返回，不能修改 response 对象
         if (response.status === 101) {
           return response;
-        }
-
-        if (setTurnstileVerified) {
-          const finalHeaders = new Headers(response.headers);
-          finalHeaders.set('Access-Control-Allow-Origin', request.headers.get('Origin') || '');
-          finalHeaders.set('Access-Control-Allow-Credentials', 'true');
-          finalHeaders.set('Vary', 'Origin');
-
-          return new Response(response.body, {
-            status: response.status,
-            statusText: response.statusText,
-            headers: finalHeaders
-          });
         }
 
         return applyCors(response, request, corsAllowedOrigins);

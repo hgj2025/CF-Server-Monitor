@@ -156,9 +156,9 @@ test('export_servers 不会带出凭据、Turnstile、UA、告警规则与 CSP',
     assert.equal(field in site, false, `导出不应包含 ${field}`);
   }
   assert.equal(site.is_public, 'false');
-  // Cloudflare 账号/令牌按需求随备份一起导出，同账号迁移需要它。
   assert.equal(site.cloudflare_account_id, 'acc');
-  assert.equal(site.cloudflare_token, 'token');
+  // 安全加固：明文云令牌与通知密钥不随备份导出。
+  assert.equal('cloudflare_token' in site, false);
 
   const appearance = data.settings.appearance;
   assert.equal(appearance.site_title, 'My Monitor');
@@ -206,7 +206,7 @@ test('import_servers 只写入白名单设置，凭据与 UA 保持原值', asyn
   assert.equal(site.ua, 'cfsm', 'UA 不能被覆盖');
   assert.equal(site.turnstile_enabled, undefined, 'Turnstile 不能被写入');
   assert.equal(site.cloudflare_account_id, 'new-acc', 'Cloudflare 账号应随备份导入');
-  assert.equal(site.cloudflare_token, 'new-token', 'Cloudflare 令牌应随备份导入');
+  assert.equal(site.cloudflare_token, undefined, '安全加固：Cloudflare 令牌不能被备份导入覆盖');
   assert.equal(site.servers_optimized, undefined, '分区标记不能被写入');
 
   const appearance = await readSetting('appearance_options');

@@ -282,10 +282,13 @@ test('登录时携带正确 App 口令可绕过 Turnstile，但凭据仍须正�
     body: JSON.stringify({ action: 'login', username: 'admin', password })
   });
 
-  // App 口令正确 → 跳过 Turnstile，凭据正确则登录成功并下发 token
+  // App 口令正确 → 跳过 Turnstile，凭据正确则登录成功并通过 HttpOnly Cookie 下发会话（响应体不暴露裸 token）
   const ok = await handleAdminAPI(buildLogin('secret'), env, sys);
   assert.equal(ok.status, 200);
-  assert.ok((await ok.json()).token);
+  const okBody = await ok.json();
+  assert.equal(okBody.success, true);
+  assert.equal(okBody.token, undefined);
+  assert.match(ok.headers.get('set-cookie') || '', /cfsm_auth=/);
 
   // App 口令正确但仍需凭据：口令错误时即便绕过 Turnstile 也拒绝
   const badCreds = await handleAdminAPI(buildLogin('wrong'), env, sys);

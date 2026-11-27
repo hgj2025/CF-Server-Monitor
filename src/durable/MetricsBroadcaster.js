@@ -17,6 +17,7 @@ import { evaluateTrafficAlert } from '../services/notification.js';
 import { ensureServerOptimization } from '../database/indexOptimization.js';
 import { getServerDetail, clearServerDetailCache } from '../utils/cache.js';
 import { getWssReportScheduleState, loadSiteSettings } from '../utils/settings.js';
+import { constantTimeEquals } from '../middleware/auth.js';
 import {
   AGENT_CONFIG_MD5_HEADER,
   AGENT_CONFIG_LEGACY_SCHEMA_VERSION,
@@ -310,6 +311,8 @@ export class MetricsBroadcaster {
     this.pendingFrontendBroadcasts = new Map();
     this.frontendBroadcastTimer = null;
     this.pendingFrontendBroadcastTs = 0;
+    this.hiddenServerIds = new Set();
+    this.hiddenServerIdsLoadedAt = 0;
 
     // 自动响应 ping 心跳，DO 无需被唤醒
     // @ts-ignore - Cloudflare Workers 运行时提供 WebSocketRequestResponsePair
@@ -717,7 +720,7 @@ export class MetricsBroadcaster {
 
     const hasSecret = Object.prototype.hasOwnProperty.call(data, 'secret');
     if (!attachment.authenticated || hasSecret) {
-      if (data.secret !== this.env.API_SECRET) {
+      if (!constantTimeEquals(String(data.secret ?? ''), String(this.env.API_SECRET ?? ''))) {
         this._closeWsWithError(ws, 'Invalid secret', 401);
         return null;
       }
@@ -1570,6 +1573,12 @@ export class MetricsBroadcaster {
         return new Response('Invalid subscription scope', { status: 400 });
       }
 
+      const canViewHidden = request.headers.get('X-CFSM-Can-View-Hidden') === '1';
+      await this._refreshHiddenServerIds();
+      if (!canViewHidden && scope !== 'all' && this.hiddenServerIds.has(scope)) {
+        return new Response('Forbidden', { status: 403 });
+      }
+
       // @ts-ignore - Cloudflare Workers 运行时提供 WebSocketPair
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
@@ -1577,8 +1586,8 @@ export class MetricsBroadcaster {
       // 使用 DO WebSocket Hibernation API 接管连接
       this.state.acceptWebSocket(server);
 
-      // 将订阅 scope 和空 serverIds 附加到 WebSocket（休眠后仍保留）
-      server.serializeAttachment({ scope, serverIds: [] });
+      // 将订阅 scope、空 serverIds 与隐藏权限标记附加到 WebSocket（休眠后仍保留）
+      server.serializeAttachment({ scope, serverIds: [], canViewHidden });
 
       // 立即发送 hello 让客户端确认连接成功
       try {
@@ -2122,6 +2131,20 @@ export class MetricsBroadcaster {
     }).filter(Boolean);
   }
 
+  async _refreshHiddenServerIds(force = false) {
+    const now = Date.now();
+    if (!force && now - this.hiddenServerIdsLoadedAt < 30 * 1000) {
+      return;
+    }
+    try {
+      const res = await this.env.DB.prepare("SELECT id FROM servers WHERE is_hidden = '1'").all();
+      this.hiddenServerIds = new Set((res?.results || []).map(r => String(r.id)));
+      this.hiddenServerIdsLoadedAt = now;
+    } catch (e) {
+      console.warn('[ws] refresh hidden servers failed:', e?.message || e);
+    }
+  }
+
   _broadcastBatch(updates, ts = Date.now(), targetScope = null) {
     const websockets = this._getFrontendWebSockets();
 
@@ -2131,7 +2154,9 @@ export class MetricsBroadcaster {
       if (targetScope === 'all' && attachment.scope !== 'all') continue;
       if (targetScope === 'single' && attachment.scope === 'all') continue;
 
+      const canViewHidden = Boolean(attachment.canViewHidden);
       const scopedUpdates = updates
+        .filter(item => (canViewHidden || !this.hiddenServerIds.has(item.serverId)))
         .filter(item => this._shouldDeliver(attachment.scope, item.serverId, attachment.serverIds))
         .map(maskPublicIpUpdate);
       if (scopedUpdates.length === 0) continue;
@@ -2185,8 +2210,18 @@ export class MetricsBroadcaster {
           return;
         }
 
-        const serverIds = normalizedServerIds.ids;
-        ws.serializeAttachment({ scope, serverIds });
+        const canViewHidden = Boolean(current.canViewHidden);
+        if (!canViewHidden) {
+          await this._refreshHiddenServerIds();
+          if (scope !== 'all' && this.hiddenServerIds.has(scope)) {
+            this._closeInvalidSubscription(ws);
+            return;
+          }
+        }
+        const serverIds = canViewHidden
+          ? normalizedServerIds.ids
+          : normalizedServerIds.ids.filter(id => !this.hiddenServerIds.has(id));
+        ws.serializeAttachment({ scope, serverIds, canViewHidden });
         try {
           ws.send(JSON.stringify({
             type: 'subscribed',

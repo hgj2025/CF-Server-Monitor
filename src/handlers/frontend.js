@@ -495,43 +495,11 @@ function shouldUseBuiltinFrontend(path) {
 }
 
 export async function serveFrontend(request, env, settings = null) {
-  const url = new URL(request.url);
-  const path = url.pathname;
-
   if (!settings) {
     settings = await loadSettings(env.DB);
   }
 
-  if (request.method === 'GET' && path.startsWith('/assets/')) {
-    const resolvedTheme = resolveThemeUrlForAsset(request, settings);
-    if (!resolvedTheme.themeUrl) {
-      return new Response('Not Found', {
-        status: 404,
-        headers: { 'Content-Type': 'text/plain;charset=UTF-8' }
-      });
-    }
-    if (resolvedTheme.preview && !await checkPreviewAuth(request, env, settings)) {
-      return buildPreviewUnauthorizedResponse(request, true);
-    }
-    return serveThemeAsset(request, resolvedTheme.themeUrl);
-  }
-
-  const previewThemeUrl = getPreviewThemeUrlFromQuery(url);
-  const configuredThemeUrl = normalizeThemeUrl(settings.theme_url);
-  const effectiveThemeUrl = previewThemeUrl || configuredThemeUrl;
-
-  if (previewThemeUrl && !await checkPreviewAuth(request, env, settings)) {
-    return buildPreviewUnauthorizedResponse(request);
-  }
-
-  if (!shouldUseBuiltinFrontend(path) && effectiveThemeUrl) {
-    const themeHtml = await loadThemeIndex(effectiveThemeUrl);
-    if (themeHtml) {
-      return buildHtmlResponse(themeHtml, settings, request, env, previewThemeUrl);
-    }
-    return buildThemeIndexErrorResponse();
-  }
-
+  // 安全加固：禁用所有第三方外部主题反代与预览，始终使用内置可信前端资源。
   const files = await loadFrontendFiles(env);
   const html = files['dashboard.html'];
 

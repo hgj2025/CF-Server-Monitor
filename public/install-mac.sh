@@ -554,7 +554,7 @@ send_correction_confirm() {
     tx_val=$(normalize_correction_value "$2")
     is_valid_correction_value "$rx_val" && is_valid_correction_value "$tx_val" || return 1
     payload="{\"id\":\"$SERVER_ID\",\"secret\":\"$SECRET\",\"rx_correction\":$rx_val,\"tx_correction\":$tx_val}"
-    http_code=$(curl -skS -o /dev/null -w "%{http_code}" -X POST \
+    http_code=$(curl -sS -o /dev/null -w "%{http_code}" -X POST \
         -H "Content-Type: application/json" \
         -d "$payload" -m 4 --connect-timeout 2 "$WORKER_URL" 2>/dev/null || echo 000)
     case "$http_code" in ''|*[!0-9]*) http_code=000 ;; esac
@@ -1433,7 +1433,7 @@ EOF
         fi
         REPORT_RESPONSE_FILE="${TEMP_DIR}/.cf_probe_response.$$"
         REPORT_HEADER_FILE="${TEMP_DIR}/.cf_probe_headers.$$"
-        REPORT_HTTP_CODE=$(curl -skS -D "$REPORT_HEADER_FILE" -o "$REPORT_RESPONSE_FILE" -w "%{http_code}" -X POST \
+        REPORT_HTTP_CODE=$(curl -sS -D "$REPORT_HEADER_FILE" -o "$REPORT_RESPONSE_FILE" -w "%{http_code}" -X POST \
             -H "Content-Type: application/json" \
             -H "X-Agent-Config-Schema: 3" \
             -H "X-Agent-Version: ${AGENT_VERSION}" \

@@ -135,11 +135,7 @@ const emit = defineEmits([
 
 const CUSTOM_GH_PROXY_VALUE = '__custom__'
 const ghProxyOptions = [
-  { value: '', label: props.trans.ghProxyPlaceholder || 'Direct' },
-  { value: 'https://ghfast.top/', label: 'https://ghfast.top/' },
-  { value: 'https://ghproxy.net/', label: 'https://ghproxy.net/' },
-  { value: 'https://gh.llkk.cc/', label: 'https://gh.llkk.cc/' },
-  { value: 'https://gh-proxy.com/', label: 'https://gh-proxy.com/' }
+  { value: '', label: props.trans.ghProxyPlaceholder || 'Direct' }
 ]
 
 const manualCustomGhProxy = ref(false)

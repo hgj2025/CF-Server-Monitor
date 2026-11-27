@@ -16,7 +16,7 @@ import {
   hasRecentFrontendRealtimeActivity,
   markFrontendRealtimeActive
 } from '../utils/realtimeBroadcastGate.js';
-import { checkWebSocketAuth, hasAppPasswordAccess } from '../middleware/auth.js';
+import { checkWebSocketAuth, constantTimeEquals, hasAppPasswordAccess } from '../middleware/auth.js';
 import {
   AGENT_CONFIG_MD5_HEADER,
   AGENT_CONFIG_SCHEMA_HEADER,
@@ -617,7 +617,7 @@ async function handleUpdateCore(request, env, ctx, discovery, authState = null) 
     const data = await request.json();
     const { id: requestedId, secret } = data;
 
-    if (secret !== env.API_SECRET) {
+    if (!constantTimeEquals(String(secret ?? ''), String(env.API_SECRET ?? ''))) {
       return createUnauthorizedResponse('Invalid secret');
     }
     if (authState) authState.ok = true;
@@ -825,7 +825,7 @@ function isWebSocketUpgradeRequest(request) {
   return !!upgradeHeader && upgradeHeader.toLowerCase() === 'websocket';
 }
 
-async function forwardWebSocketUpgrade(request, env, internalPath, logPrefix) {
+async function forwardWebSocketUpgrade(request, env, internalPath, logPrefix, extraHeaders = null) {
   if (!env || !env.METRICS_BROADCASTER) {
     return new Response(JSON.stringify({ error: 'WebSocket not enabled', code: 503 }), {
       status: 503,
@@ -844,7 +844,13 @@ async function forwardWebSocketUpgrade(request, env, internalPath, logPrefix) {
     const stub = env.METRICS_BROADCASTER.get(id);
     const realOrigin = new URL(request.url).origin;
     const headers = new Headers(request.headers);
+    headers.delete('X-CFSM-Can-View-Hidden');
     headers.set('X-Real-Origin', realOrigin);
+    if (extraHeaders) {
+      for (const [k, v] of Object.entries(extraHeaders)) {
+        headers.set(k, v);
+      }
+    }
     if (request.cf?.country && !headers.get('cf-ipcountry')) {
       headers.set('cf-ipcountry', request.cf.country);
     }
@@ -865,10 +871,10 @@ async function forwardWebSocketUpgrade(request, env, internalPath, logPrefix) {
 
 export async function handleWebSocketUpgrade(request, env) {
   const settings = await loadSiteSettings(env.DB, { forceRefresh: true });
-  // 私有站点的实时订阅：登录态或第三方 App 口令任一通过即可。
-  const authorized = settings?.is_public === 'true'
-    || await checkWebSocketAuth(request, env, settings)
+  const canViewHidden = (await checkWebSocketAuth(request, env, settings))
     || hasAppPasswordAccess(request, settings);
+  // 私有站点的实时订阅：登录态或第三方 App 口令任一通过即可。
+  const authorized = settings?.is_public === 'true' || canViewHidden;
   if (!authorized) {
     return new Response(JSON.stringify({ error: 'Unauthorized', code: 401 }), {
       status: 401,
@@ -876,7 +882,9 @@ export async function handleWebSocketUpgrade(request, env) {
     });
   }
 
-  const response = await forwardWebSocketUpgrade(request, env, '/ws', '[ws]');
+  const response = await forwardWebSocketUpgrade(request, env, '/ws', '[ws]', {
+    'X-CFSM-Can-View-Hidden': canViewHidden ? '1' : '0'
+  });
   if (response?.status === 101) {
     markFrontendRealtimeActive();
   }

@@ -73,7 +73,10 @@ function getJwtSecret(env, sys) {
     return sys.jwt_secret;
   }
 
-  const fallback = env.API_SECRET || 'default_jwt_secret_for_server_monitor';
+  const fallback = typeof env.API_SECRET === 'string' ? env.API_SECRET.trim() : '';
+  if (!fallback) {
+    throw new Error('JWT secret not configured');
+  }
   return fallback.padEnd(32, 'x').substring(0, 64);
 }
 
@@ -177,7 +180,8 @@ export function buildClearUaCookie(request) {
 export const APP_PASSWORD_HEADER = 'X-App-Password';
 
 // 常量时间比较，避免通过响应耗时逐位试探口令。
-function constantTimeEquals(a, b) {
+export function constantTimeEquals(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
   if (a.length !== b.length) return false;
   let diff = 0;
   for (let i = 0; i < a.length; i += 1) {
@@ -217,8 +221,8 @@ export async function validateCredentials(username, password, env, sys) {
     const valid = (
       typeof env.API_SECRET === 'string' &&
       env.API_SECRET.length > 0 &&
-      username === validUsername &&
-      password === env.API_SECRET
+      constantTimeEquals(String(username || ''), validUsername) &&
+      constantTimeEquals(String(password || ''), env.API_SECRET)
     );
     return { valid, needsPasswordUpgrade: false };
   } catch (e) {

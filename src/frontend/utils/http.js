@@ -30,6 +30,12 @@ const redirectToAdminLogin = () => {
   window.location.assign(adminPath)
 }
 
+let adminLoggedInState = typeof window !== 'undefined' && window.__APP_CONFIG__?.authorization === true
+
+export const setAdminLoggedIn = (value) => {
+  adminLoggedInState = Boolean(value)
+}
+
 const createHeaders = (includeAuth = true, includeTurnstile = true, baseUrl = null, options = {}) => {
   const {
     includeTurnstileToken = includeTurnstile,
@@ -38,14 +44,9 @@ const createHeaders = (includeAuth = true, includeTurnstile = true, baseUrl = nu
   const headers = {
     'Content-Type': 'application/json'
   }
-  
-  if (includeAuth) {
-    const token = localStorage.getItem(STORAGE.JWT_TOKEN)
-    if (token) {
-      headers['Authorization'] = 'Bearer ' + token
-    }
-  }
-  
+  // 管理员鉴权完全依赖 HttpOnly Cookie（credentials: 'include'），不再从 localStorage 读取 JWT。
+  void includeAuth
+
   if (includeTurnstile && includeTurnstileToken) {
     const turnstileToken = localStorage.getItem(STORAGE.TURNSTILE_TOKEN)
     if (turnstileToken) {
@@ -59,14 +60,15 @@ const createHeaders = (includeAuth = true, includeTurnstile = true, baseUrl = nu
       headers['X-Turnstile-Verified'] = turnstileVerified
     }
   }
-  
+
   return headers
 }
 
 const handleResponse = async (res, options = {}) => {
   const { autoRedirect = true, baseUrl = null } = options
-  
+
   if (res.status === 401) {
+    adminLoggedInState = false
     localStorage.removeItem(STORAGE.JWT_TOKEN)
     if (autoRedirect) {
       redirectToAdminLogin()
@@ -257,7 +259,7 @@ export const http = {
 }
 
 export const isAdminLoggedIn = () => {
-  return !!localStorage.getItem(STORAGE.JWT_TOKEN)
+  return adminLoggedInState || (typeof window !== 'undefined' && window.__APP_CONFIG__?.authorization === true)
 }
 
 export default http

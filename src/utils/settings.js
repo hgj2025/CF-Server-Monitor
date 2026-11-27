@@ -38,7 +38,13 @@ export const SETTINGS_EXCLUDED_FIELDS = [
   'resource_alert_rules',
   'csp_static',
   'csp_api',
-  'servers_optimized'
+  'servers_optimized',
+  'cloudflare_token',
+  'tg_bot_token',
+  'notification_webhook_headers',
+  'custom_head',
+  'custom_script',
+  'theme_url'
 ];
 
 export const IMPORTABLE_SITE_FIELDS = SITE_FIELDS.filter((field) => !SETTINGS_EXCLUDED_FIELDS.includes(field));
@@ -122,7 +128,7 @@ const defaults = {
   default_language: 'auto',
   theme_options: {},
   auto_discovery: 'false',
-  is_public: 'true',
+  is_public: 'false',
   show_price: 'true',
   show_expire: 'true',
   show_tf: 'true',

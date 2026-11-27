@@ -1,7 +1,7 @@
 import { buildAuthCookie, buildClearAuthCookie, buildUaCookie, buildClearUaCookie, checkAuth, simpleAuthResponse, validateCredentials, generateToken, hasAppPasswordAccess } from '../middleware/auth.js';
 import { getLatestMetricsForAllServers } from '../database/schema.js';
 import { getAllServers, clearServersListCache } from '../utils/cache.js';
-import { clearAppearanceSettingsCache, isValidThemeOptions, isWssReportConfigured, isWssReportEnabled, normalizeBooleanSetting, normalizeDefaultLanguage, normalizeDisplayMode, normalizeExpireNotificationTime, normalizeExpireReminder, normalizeFrontendWsTimeoutMinutes, normalizeLongHistoryPoints, normalizeNotificationLanguage, normalizeNotificationTemplate, normalizeNotificationTimezone, normalizeNotificationWebhookBody, normalizeNotificationWebhookFormat, normalizeNotificationWebhookHeaders, normalizeNotificationWebhookMethod, normalizePreferredTheme, normalizeResourceAlertRules, normalizeTgNotify, normalizeWssReportHours, saveSiteOptions, saveAppearanceOptions, saveThemeOptions, validateAppPassword, validateUserAgent, SITE_FIELDS, APPEARANCE_FIELDS, IMPORTABLE_SITE_FIELDS, IMPORTABLE_APPEARANCE_FIELDS, loadSiteSettings, loadAppearanceOptions } from '../utils/settings.js';
+import { clearAppearanceSettingsCache, generateRandomSecret, isValidThemeOptions, isWssReportConfigured, isWssReportEnabled, normalizeBooleanSetting, normalizeDefaultLanguage, normalizeDisplayMode, normalizeExpireNotificationTime, normalizeExpireReminder, normalizeFrontendWsTimeoutMinutes, normalizeLongHistoryPoints, normalizeNotificationLanguage, normalizeNotificationTemplate, normalizeNotificationTimezone, normalizeNotificationWebhookBody, normalizeNotificationWebhookFormat, normalizeNotificationWebhookHeaders, normalizeNotificationWebhookMethod, normalizePreferredTheme, normalizeResourceAlertRules, normalizeTgNotify, normalizeWssReportHours, saveSiteOptions, saveAppearanceOptions, saveThemeOptions, validateAppPassword, validateUserAgent, SITE_FIELDS, APPEARANCE_FIELDS, IMPORTABLE_SITE_FIELDS, IMPORTABLE_APPEARANCE_FIELDS, loadSiteSettings, loadAppearanceOptions } from '../utils/settings.js';
 import { mergeMetricsIntoServer } from '../utils/metrics.js';
 import { normalizePctOrNull } from '../utils/traffic.js';
 import { verifyTurnstileToken, hashPassword } from '../utils/common.js';
@@ -480,11 +480,79 @@ async function getD1DailyUsage(token, accountId) {
   };
 }
 
+const LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 5;
+const LOGIN_RATE_LIMIT_WINDOW_SECONDS = 300;
+let loginRateLimitTableReady = false;
+
+async function ensureLoginRateLimitTable(db) {
+  if (loginRateLimitTableReady || !db) return;
+  await db.prepare(
+    'CREATE TABLE IF NOT EXISTS login_rate_limits (ip TEXT PRIMARY KEY, attempts INTEGER NOT NULL, window_start INTEGER NOT NULL)'
+  ).run();
+  loginRateLimitTableReady = true;
+}
+
+function getClientIpForRateLimit(request) {
+  const cfIp = request.headers.get('CF-Connecting-IP');
+  if (cfIp) return cfIp.trim().slice(0, 64);
+  const xff = request.headers.get('X-Forwarded-For');
+  if (xff) return xff.split(',')[0].trim().slice(0, 64);
+  return 'unknown';
+}
+
+async function isLoginRateLimited(db, ip) {
+  if (!db) return false;
+  try {
+    await ensureLoginRateLimitTable(db);
+    const now = Math.floor(Date.now() / 1000);
+    const row = await db.prepare('SELECT attempts, window_start FROM login_rate_limits WHERE ip = ?').bind(ip).first();
+    if (!row) return false;
+    if (now - Number(row.window_start || 0) >= LOGIN_RATE_LIMIT_WINDOW_SECONDS) {
+      return false;
+    }
+    return Number(row.attempts || 0) >= LOGIN_RATE_LIMIT_MAX_ATTEMPTS;
+  } catch (e) {
+    console.error('[login-rate-limit] check failed:', e);
+    return false;
+  }
+}
+
+async function recordFailedLoginAttempt(db, ip) {
+  if (!db) return;
+  try {
+    await ensureLoginRateLimitTable(db);
+    const now = Math.floor(Date.now() / 1000);
+    const row = await db.prepare('SELECT attempts, window_start FROM login_rate_limits WHERE ip = ?').bind(ip).first();
+    if (!row || now - Number(row.window_start || 0) >= LOGIN_RATE_LIMIT_WINDOW_SECONDS) {
+      await db.prepare(
+        'INSERT INTO login_rate_limits (ip, attempts, window_start) VALUES (?, 1, ?) ON CONFLICT(ip) DO UPDATE SET attempts = 1, window_start = excluded.window_start'
+      ).bind(ip, now).run();
+    } else {
+      await db.prepare('UPDATE login_rate_limits SET attempts = attempts + 1 WHERE ip = ?').bind(ip).run();
+    }
+  } catch (e) {
+    console.error('[login-rate-limit] record failed:', e);
+  }
+}
+
+async function clearLoginRateLimit(db, ip) {
+  if (!db) return;
+  try {
+    await ensureLoginRateLimitTable(db);
+    await db.prepare('DELETE FROM login_rate_limits WHERE ip = ?').bind(ip).run();
+  } catch (_) {}
+}
+
 async function handleLoginAction({ request, env, sys, data }) {
   const { username, password } = data;
 
   if (!username || !password) {
     return createBadRequestResponse('missingCredentials');
+  }
+
+  const clientIp = getClientIpForRateLimit(request);
+  if (await isLoginRateLimited(env.DB, clientIp)) {
+    return createErrorResponse(new AppError('tooManyLoginAttempts', 429));
   }
 
   const turnstileEnabled = sys && (sys.turnstile_enabled === 'true' || sys.turnstile_enabled === true);
@@ -507,8 +575,11 @@ async function handleLoginAction({ request, env, sys, data }) {
   const credentialResult = await validateCredentials(username, password, env, sys);
 
   if (!credentialResult.valid) {
+    await recordFailedLoginAttempt(env.DB, clientIp);
     return createUnauthorizedResponse('invalidCredentials');
   }
+
+  await clearLoginRateLimit(env.DB, clientIp);
 
   if (credentialResult.needsPasswordUpgrade) {
     try {
@@ -526,7 +597,6 @@ async function handleLoginAction({ request, env, sys, data }) {
     const token = await generateToken(env, sys);
     return createSuccessResponseWithCookies({
       success: true,
-      token: token,
       message: 'loginSuccessful'
     }, [
       buildAuthCookie(request, token),
@@ -578,26 +648,8 @@ async function handleGetSettingsAction({ env, sys, loadFullSettings }) {
   });
 }
 
-async function handleStartThemePreviewAction({ request, data }) {
-  const normalizedThemeUrl = normalizeThemeUrl(data.theme_url);
-  if (!normalizedThemeUrl) {
-    return createBadRequestResponse('invalidThemeUrl');
-  }
-  if (!await validateThemeUrlAvailable(normalizedThemeUrl)) {
-    return createBadRequestResponse('invalidThemeUrl');
-  }
-
-  const token = extractBearerToken(request);
-  if (!token) {
-    return simpleAuthResponse();
-  }
-
-  return createSuccessResponse({
-    success: true,
-    preview_url: buildThemePreviewUrl(request, normalizedThemeUrl)
-  }, {
-    'Set-Cookie': buildThemePreviewAuthCookie(request, token)
-  });
+async function handleStartThemePreviewAction() {
+  return createErrorResponse(new AppError('thirdPartyThemeDisabled', 403));
 }
 
 async function handleSaveThemeOptionsAction({ env, sys, data }) {
@@ -873,13 +925,11 @@ export async function handleAdminAPI(request, env, sys, loadFullSettings = null,
       if (!String(sys?.password || '').trim() && !String(settings.password || '')) {
         return createBadRequestResponse('passwordRequired');
       }
-      const normalizedThemeUrl = normalizeThemeUrl(settings.theme_url);
-      if (normalizedThemeUrl === null) {
-        return createBadRequestResponse('invalidThemeUrl');
+      // 安全加固：禁止保存第三方外部主题 URL，始终清空 theme_url 使用内置前端
+      if (settings.theme_url && String(settings.theme_url).trim() !== '') {
+        return createErrorResponse(new AppError('thirdPartyThemeDisabled', 403));
       }
-      if (normalizedThemeUrl && !await validateThemeUrlAvailable(normalizedThemeUrl)) {
-        return createBadRequestResponse('invalidThemeUrl');
-      }
+      const normalizedThemeUrl = '';
 
       // 如果 turnstile_enabled 或 turnstile_login_enabled 开启，验证 turnstile_site_key 和 turnstile_secret_key 都不为空
       if (settings.turnstile_enabled === 'true' || settings.turnstile_enabled === true || settings.turnstile_login_enabled === 'true' || settings.turnstile_login_enabled === true) {
@@ -992,11 +1042,14 @@ export async function handleAdminAPI(request, env, sys, loadFullSettings = null,
       }
 
       const siteOptions = {};
+      let passwordRotated = false;
       for (const field of SITE_FIELDS) {
         if (settings[field] !== undefined) {
           if (field === 'password') {
             if (settings[field] && settings[field].length > 0) {
               siteOptions[field] = await hashPassword(settings[field]);
+              siteOptions.jwt_secret = generateRandomSecret(32);
+              passwordRotated = true;
             }
           } else if (PING_NODE_FIELDS.includes(field)) {
             siteOptions[field] = pingNodes.values[field];
@@ -1067,6 +1120,16 @@ export async function handleAdminAPI(request, env, sys, loadFullSettings = null,
         settings.wss_report_hours !== undefined
       )) {
         scheduleAgentReportModeChanged(env, ctx);
+      }
+      if (passwordRotated) {
+        const rotatedToken = await generateToken(env, sys);
+        return createSuccessResponseWithCookies({
+          success: true,
+          message: 'updateSuccess'
+        }, [
+          buildAuthCookie(request, rotatedToken),
+          buildUaCookie(request, sys?.ua)
+        ]);
       }
       return createSuccessResponse({
         success: true,

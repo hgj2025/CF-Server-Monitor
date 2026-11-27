@@ -80,18 +80,25 @@ jobs:
           new_sqlite_classes = ["MetricsBroadcaster"]
 
           [vars]
-          API_SECRET = "SECRET_PLACEHOLDER"
           API_USER_NAME = "USER_NAME_PLACEHOLDER"
           CORS_ALLOWED_ORIGINS = "CORS_ORIGINS_PLACEHOLDER"
           WEOF
 
-          # 替换占位符
-          sed -i "s|D1_PLACEHOLDER|${{ secrets.D1_DATABASE_ID }}|g" wrangler.toml
-          sed -i "s|SECRET_PLACEHOLDER|${{ secrets.API_SECRET }}|g" wrangler.toml
-          sed -i "s|USER_NAME_PLACEHOLDER|${{ secrets.API_USER_NAME }}|g" wrangler.toml
-          sed -i "s|CORS_ORIGINS_PLACEHOLDER|${{ secrets.CORS_ALLOWED_ORIGINS }}|g" wrangler.toml
+          # 安全替换占位符（避免 secrets 中特殊字符触发 sed 注入；API_SECRET 改走加密 Secret）
+          node -e '
+            const fs = require("fs");
+            let s = fs.readFileSync("wrangler.toml", "utf8");
+            s = s.replace("D1_PLACEHOLDER", () => process.env.D1_DATABASE_ID || "");
+            s = s.replace("USER_NAME_PLACEHOLDER", () => process.env.API_USER_NAME || "");
+            s = s.replace("CORS_ORIGINS_PLACEHOLDER", () => process.env.CORS_ALLOWED_ORIGINS || "");
+            fs.writeFileSync("wrangler.toml", s);
+          '
 
           echo "✅ wrangler.toml 已生成"
+        env:
+          D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+          API_USER_NAME: ${{ secrets.API_USER_NAME }}
+          CORS_ALLOWED_ORIGINS: ${{ secrets.CORS_ALLOWED_ORIGINS }}
 
       # wrangler v4 的 `deploy` 会自动根据 wrangler.toml 中的 [[durable_objects.bindings]]
       # 声明创建 DO namespace（幂等：已存在则跳过），无需单独命令。
@@ -103,6 +110,15 @@ jobs:
           accountId: ${{ secrets.CF_ACCOUNT_ID }}
           wranglerVersion: '4'
           command: deploy
+
+      - name: 🔐 Sync encrypted API_SECRET
+        if: env.API_SECRET != ''
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          API_SECRET: ${{ secrets.API_SECRET }}
+        run: |
+          printf '%s' "$API_SECRET" | npx wrangler@4 secret put API_SECRET
 
       - name: ✅ Deployment Success
         if: success()

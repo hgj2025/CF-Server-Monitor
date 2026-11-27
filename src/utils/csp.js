@@ -2,20 +2,10 @@ const TURNSTILE_DOMAIN = 'https://challenges.cloudflare.com';
 const INSIGHTS_DOMAIN = 'https://static.cloudflareinsights.com';
 const FONTS_API_DOMAIN = 'https://fonts.googleapis.com';
 const FONTS_STATIC_DOMAIN = 'https://fonts.gstatic.com';
-const RAW_GITHUB_DOMAIN = 'https://raw.githubusercontent.com';
 const DEFAULT_CONNECT_DOMAINS = [
-  'https://api.github.com',
-  'https://api.iconify.design',
-  'https://api.unisvg.com',
-  'https://api.simplesvg.com',
   'https://api.frankfurter.app',
   'https://api.frankfurter.dev',
-  'https://open.er-api.com',
-  'https://api.ip.sb',
-  'https://ipwho.is',
-  'https://api.ipapi.is',
-  'https://ipapi.co',
-  'https://api.vore.top'
+  'https://open.er-api.com'
 ];
 
 const CSP_META_TAG_RE_GLOBAL = /<meta\b(?=[^>]*http-equiv=["']Content-Security-Policy["'])[^>]*>\s*/gi;
@@ -66,7 +56,7 @@ export function buildApiDomainsWithWs(rawApiDomains) {
 }
 
 export function buildCspHeader({ staticDomains = [], apiDomains = [] } = {}) {
-  const imgSources = ["'self'", TURNSTILE_DOMAIN, RAW_GITHUB_DOMAIN, ...staticDomains, 'data:'];
+  const imgSources = ["'self'", TURNSTILE_DOMAIN, ...staticDomains, 'data:'];
   return [
     buildDirective('default-src', ["'self'"]),
     buildDirective('script-src', ["'self'", "'unsafe-inline'", TURNSTILE_DOMAIN, INSIGHTS_DOMAIN, ...staticDomains]),
@@ -74,7 +64,7 @@ export function buildCspHeader({ staticDomains = [], apiDomains = [] } = {}) {
     buildDirective('img-src', imgSources),
     buildDirective('media-src', imgSources),
     buildDirective('font-src', ["'self'", TURNSTILE_DOMAIN, FONTS_STATIC_DOMAIN, ...staticDomains]),
-    buildDirective('connect-src', ["'self'", TURNSTILE_DOMAIN, INSIGHTS_DOMAIN, RAW_GITHUB_DOMAIN, ...DEFAULT_CONNECT_DOMAINS, ...apiDomains]),
+    buildDirective('connect-src', ["'self'", TURNSTILE_DOMAIN, INSIGHTS_DOMAIN, ...DEFAULT_CONNECT_DOMAINS, ...apiDomains]),
     buildDirective('frame-src', [TURNSTILE_DOMAIN]),
     buildDirective('frame-ancestors', ["'none'"]),
     buildDirective('form-action', ["'self'"]),
@@ -102,7 +92,12 @@ export function injectApiBase(html, apiBases) {
 }
 
 function escapeCssUrl(value) {
-  return String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"');
+  return String(value)
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/"/g, '\\"')
+    .replace(/</g, '\\3c ')
+    .replace(/>/g, '\\3e ');
 }
 
 function buildBodyBackgroundRule(safeUrl) {

@@ -1,4 +1,4 @@
-import { http } from './http'
+import { http, setAdminLoggedIn } from './http'
 import { getApiBases, getWsBase, hasMultipleApiBases, getTitle } from './config'
 import { DEFAULT_SITE_TITLE, FRONTEND_WS_TIMEOUT_MINUTES_MAX, LATENCY_WINDOW, STORAGE } from './constants'
 import { ref } from 'vue'
@@ -47,13 +47,7 @@ export const createLiveSocket = (subscribe, handlers = {}, apiIndex = 0, serverI
     return getWsBase()
   }
 
-  const getJwtToken = () => {
-    try {
-      return localStorage.getItem(STORAGE.JWT_TOKEN) || ''
-    } catch (_) {
-      return ''
-    }
-  }
+  const getJwtToken = () => ''
 
   const isSameHostWebSocket = (url) => {
     if (typeof window === 'undefined' || !window.location) return false
@@ -410,20 +404,25 @@ export const login = async (username, password, turnstileToken = '', apiIndex = 
     localStorage.setItem(STORAGE.TURNSTILE_TOKEN, turnstileToken)
   }
   const result = await http.postByIndex('/admin/api', { action: 'login', username, password }, apiIndex, { autoRedirect: false })
-  
-  if (!result.error && result.data && result.data.token) {
-    localStorage.setItem(STORAGE.JWT_TOKEN, result.data.token)
+
+  if (!result.error && result.data && result.data.success) {
+    setAdminLoggedIn(true)
+    localStorage.removeItem(STORAGE.JWT_TOKEN)
   }
   return result
 }
 
 export const logout = () => {
+  setAdminLoggedIn(false)
   localStorage.removeItem(STORAGE.JWT_TOKEN)
 }
 
 export const fetchConfig = async (apiIndex = 0) => {
   const result = await http.getByIndex('/api/config', apiIndex, { includeAuth: true, includeTurnstile: false })
   if (result.error) return null
+  if (result.data) {
+    setAdminLoggedIn(result.data.authorization === true)
+  }
   if (result.data && result.data.version) {
     VERSION.value = result.data.version
   }

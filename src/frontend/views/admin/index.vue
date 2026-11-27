@@ -613,6 +613,7 @@ import CopyCommandModal from './components/CopyCommandModal.vue'
 import AutoDiscoveryCommandModal from './components/AutoDiscoveryCommandModal.vue'
 import { adminApi, login, logout as apiLogout, upgradeDatabase, clearHistory, fetchConfig } from '../../utils/api'
 import { hasMultipleApiBases, getApiBases } from '../../utils/config.js'
+import { isAdminLoggedIn } from '../../utils/http.js'
 import { copyTextToClipboard } from '../../utils/clipboard.js'
 import { normalizeLanguagePreference, normalizeNotificationLanguagePreference, t, useTranslation } from '../../utils/i18n'
 import { PING_NODE_FIELDS, validatePingNode } from '../../utils/pingNode.js'
@@ -628,7 +629,7 @@ const route = useRoute()
 const router = useRouter()
 const appConfig = inject('appConfig', {})
 let startupConfigConsumed = false
-const AGENT_RELEASE_URL = 'https://api.github.com/repos/huilang-me/cfsm-agent/releases/latest'
+const AGENT_RELEASE_URL = 'https://api.github.com/repos/hgj2025/cfsm-agent/releases/latest'
 const AGENT_RELEASE_FAILURE_TTL = 30 * 1000
 
 let cachedAgentReleaseVersion = ''
@@ -1289,7 +1290,9 @@ const handleLogin = async () => {
       loadLatestAgentVersion()
     ])
   } else {
-    loginError.value = result.status === 403 ? 'Please complete the verification' : trans.value.errorInvalidUsername
+    loginError.value = result.status === 429
+      ? 'Too many failed login attempts, please try again in 5 minutes'
+      : (result.status === 403 ? 'Please complete the verification' : trans.value.errorInvalidUsername)
     loginForm.value.password = ''
     clearTurnstile()
     resetTurnstile('#admin-turnstile-container')
@@ -1311,8 +1314,7 @@ const logout = async () => {
 }
 
 const checkLoginStatus = () => {
-  const token = localStorage.getItem(STORAGE.JWT_TOKEN)
-  return !!token || appConfig?.authorization === true
+  return isAdminLoggedIn() || appConfig?.authorization === true
 }
 
 const initAdmin = async () => {
@@ -1778,12 +1780,12 @@ const getUninstallCommand = () => {
   const proxy = isGo ? deleteGhProxy.value.trim() : ''
   if (isGo) {
     if (deleteTargetOs.value === 'windows') {
-      const ghUrl = buildGhRawUrl(proxy, '/huilang-me/cfsm-agent/main/install.ps1')
+      const ghUrl = buildGhRawUrl(proxy, '/hgj2025/cfsm-agent/main/install.ps1')
       const proxyParam = proxy ? ` --install-ghproxy=${quotePowerShellArg(proxy)}` : ''
       return `$script = "$env:TEMP\\install-cf-probe.ps1"; Invoke-WebRequest -Uri ${quotePowerShellArg(ghUrl)} -OutFile $script -UseBasicParsing; PowerShell -ExecutionPolicy Bypass -File $script uninstall${proxyParam}`
     }
     const sudoPrefix = deleteTargetOs.value === 'mac' ? 'sudo ' : ''
-    const ghUrl = buildGhRawUrl(proxy, '/huilang-me/cfsm-agent/main/install.sh')
+    const ghUrl = buildGhRawUrl(proxy, '/hgj2025/cfsm-agent/main/install.sh')
     const proxyParam = proxy ? ` --install-ghproxy=${quotePosixShellArg(proxy)}` : ''
     const uninstallCommand = `curl -fsSL ${quotePosixShellArg(ghUrl)} | ${sudoPrefix}sh -s -- uninstall${proxyParam}`
     if (deleteTargetOs.value === 'linux' && deleteInstallMode.value === 'cfsm-user') {
@@ -1802,7 +1804,7 @@ const copyCmd = (serverId) => {
   copyServerId.value = serverId
   currentServerName.value = server?.name || ''
   targetOs.value = 'linux'
-  installMode.value = 'current-user'
+  installMode.value = 'cfsm-user'
   installGhProxy.value = ''
   installVersion.value = ''
   collectInterval.value = server?.collect_interval ?? 0
@@ -1940,12 +1942,12 @@ const getCustomInstallCommand = () => {
     )
     const ua = installUserAgent()
     if (ua) params.push(`-ua=${quotePowerShellArg(ua)}`)
-    const ghUrl = buildGhRawUrl(proxy, '/huilang-me/cfsm-agent/main/install.ps1')
+    const ghUrl = buildGhRawUrl(proxy, '/hgj2025/cfsm-agent/main/install.ps1')
     return `$script = "$env:TEMP\\install-cf-probe.ps1"; Invoke-WebRequest -Uri ${quotePowerShellArg(ghUrl)} -OutFile $script -UseBasicParsing; PowerShell -ExecutionPolicy Bypass -File $script ${params.join(' ')}`
   }
   if (targetOs.value === 'docker') {
     const safeTag = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(version) ? version : 'latest'
-    const image = `ghcr.io/huilang-me/cfsm-agent:${safeTag}`
+    const image = `ghcr.io/hgj2025/cfsm-agent:${safeTag}`
     const ua = installUserAgent()
     const uaEnv = ua ? ` -e UA=${quotePosixShellArg(ua)}` : ''
     return [
@@ -1967,7 +1969,7 @@ const getCustomInstallCommand = () => {
   )
   const ua = installUserAgent()
   if (ua) params.push(`-ua=${quotePosixShellArg(ua)}`)
-  const ghUrl = buildGhRawUrl(proxy, '/huilang-me/cfsm-agent/main/install.sh')
+  const ghUrl = buildGhRawUrl(proxy, '/hgj2025/cfsm-agent/main/install.sh')
   const installCommand = `curl -fsSL ${quotePosixShellArg(ghUrl)} | sh -s -- ${params.join(' ')}`
   if (!isDedicatedUserInstall) return installCommand
 
@@ -1998,7 +2000,7 @@ const buildAutoDiscoveryCommand = ({ targetOs: os = 'linux', installMode: mode =
     if (serverName) params.push(`-name=${quotePowerShellArg(serverName)}`)
     const ua = installUserAgent()
     if (ua) params.push(`-ua=${quotePowerShellArg(ua)}`)
-    const ghUrl = buildGhRawUrl(proxy, '/huilang-me/cfsm-agent/main/install.ps1')
+    const ghUrl = buildGhRawUrl(proxy, '/hgj2025/cfsm-agent/main/install.ps1')
     return `$script = "$env:TEMP\\install-cf-probe.ps1"; Invoke-WebRequest -Uri ${quotePowerShellArg(ghUrl)} -OutFile $script -UseBasicParsing; PowerShell -ExecutionPolicy Bypass -File $script ${params.join(' ')}`
   }
 
@@ -2013,7 +2015,7 @@ const buildAutoDiscoveryCommand = ({ targetOs: os = 'linux', installMode: mode =
   if (serverName) params.push(`-name=${quotePosixShellArg(serverName)}`)
   const ua = installUserAgent()
   if (ua) params.push(`-ua=${quotePosixShellArg(ua)}`)
-  const ghUrl = buildGhRawUrl(proxy, '/huilang-me/cfsm-agent/main/install.sh')
+  const ghUrl = buildGhRawUrl(proxy, '/hgj2025/cfsm-agent/main/install.sh')
   const installCommand = `curl -fsSL ${quotePosixShellArg(ghUrl)} | sh -s -- ${params.join(' ')}`
   if (os !== 'linux' || mode !== 'cfsm-user') return installCommand
 
